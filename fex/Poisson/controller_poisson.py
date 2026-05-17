@@ -21,7 +21,7 @@ parser.add_argument('--epoch', default=2000, type=int)
 parser.add_argument('--bs', default=1, type=int)
 parser.add_argument('--greedy', default=0, type=float)
 parser.add_argument('--random_step', default=0, type=float)
-parser.add_argument('--ckpt', default='', type=str)
+parser.add_argument('--ckpt', default='checkpoint', type=str)
 parser.add_argument('--gpu', default=0, type=int)
 parser.add_argument('--dim', default=20, type=int)
 parser.add_argument('--tree', default='depth2', type=str)
@@ -30,9 +30,13 @@ parser.add_argument('--percentile', default=0.5, type=float)
 parser.add_argument('--base', default=100, type=int)
 parser.add_argument('--domainbs', default=1000, type=int)
 parser.add_argument('--bdbs', default=1000, type=int)
+parser.add_argument('--finetune', default=20000, type=int)
+parser.add_argument('--eval_iters', default=1000, type=int)
+parser.add_argument('--eval_bs', default=100000, type=int)
 args = parser.parse_args()
 
 os.environ['CUDA_VISIBLE_DEVICES'] = str(args.gpu)
+device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
 unary = func.unary_functions
 binary = func.binary_functions
@@ -675,7 +679,7 @@ def train_controller(Controller, Controller_optim, trainable_tree, tree_params, 
             binary_code = binary_code + str(action[0].item())
         # print(actions, '**********************************************')
         rewards, formulas = get_reward(bs, actions, trainable_tree, tree_params, tree_optim)
-        rewards = torch.cuda.FloatTensor(rewards).view(-1,1)
+        rewards = torch.tensor(rewards, device=device, dtype=torch.float32).view(-1, 1)
         # discount
         if 1 > hyperparams['discount'] > 0:
             rewards = discount(rewards, hyperparams['discount'])
@@ -750,58 +754,60 @@ def train_controller(Controller, Controller_optim, trainable_tree, tree_params, 
                                                      candidate_.expression))
         logger.append([666, 0, 0, 0, candidate_.error.item(), candidate_.expression])
 
-    finetune = 20000
+    finetune = args.finetune
     global count, leaves_cnt
-    for candidate_ in candidates.candidates:
-        trainable_tree = learnable_compuatation_tree()
-        trainable_tree = trainable_tree.cuda()
+    if finetune > 0:
+        for candidate_ in candidates.candidates:
+            trainable_tree = learnable_compuatation_tree()
+            trainable_tree = trainable_tree.cuda()
 
-        params = []
-        for idx, v in enumerate(trainable_tree.learnable_operator_set):
-            if idx not in leaves_index:
-                for modules in trainable_tree.learnable_operator_set[v]:
-                    for param in modules.parameters():
-                        params.append(param)
-        for module in trainable_tree.linear:
-            for param in module.parameters():
-                params.append(param)
+            params = []
+            for idx, v in enumerate(trainable_tree.learnable_operator_set):
+                if idx not in leaves_index:
+                    for modules in trainable_tree.learnable_operator_set[v]:
+                        for param in modules.parameters():
+                            params.append(param)
+            for module in trainable_tree.linear:
+                for param in module.parameters():
+                    params.append(param)
 
-        reset_params(params)
-        tree_optim = torch.optim.Adam(params, lr=1e-2)
+            reset_params(params)
+            tree_optim = torch.optim.Adam(params, lr=1e-2)
 
-        for current_iter in range(finetune):
-            error = best_error(candidate_.action, trainable_tree)
-            tree_optim.zero_grad()
-            error.backward()
+            for current_iter in range(finetune):
+                error = best_error(candidate_.action, trainable_tree)
+                tree_optim.zero_grad()
+                error.backward()
 
-            tree_optim.step()
+                tree_optim.step()
 
-            count = 0
-            leaves_cnt = 0
-            formula = inorder_visualize(basic_tree(), candidate_.action, trainable_tree)
-            leaves_cnt = 0
-            count = 0
-            suffix = 'Finetune-- Iter {current_iter} Error {error:.5f} Formula {formula}'.format(current_iter=current_iter, error=error, formula=formula)
-            if (current_iter + 1) % 100 == 0:
-                logger.append([current_iter, 0, 0, 0, error.item(), formula])
+                count = 0
+                leaves_cnt = 0
+                formula = inorder_visualize(basic_tree(), candidate_.action, trainable_tree)
+                leaves_cnt = 0
+                count = 0
+                suffix = 'Finetune-- Iter {current_iter} Error {error:.5f} Formula {formula}'.format(current_iter=current_iter, error=error, formula=formula)
+                if (current_iter + 1) % 100 == 0:
+                    logger.append([current_iter, 0, 0, 0, error.item(), formula])
 
-            cosine_lr(tree_optim, 1e-2, current_iter, finetune)
-            print(suffix)
+                cosine_lr(tree_optim, 1e-2, current_iter, finetune)
+                print(suffix)
 
-        numerators = []
-        denominators = []
+            if args.eval_iters > 0:
+                numerators = []
+                denominators = []
 
-        for i in range(1000):
-            print(i)
-            x = (torch.rand(100000, args.dim).cuda()) * (args.right - args.left) + args.left
-            sq_de = torch.mean((func.true_solution(x))**2)
-            sq_nu = torch.mean((func.true_solution(x)-trainable_tree(x, candidate_.action)) ** 2)
-            numerators.append(sq_nu.item())
-            denominators.append(sq_de.item())
+                for i in range(args.eval_iters):
+                    print(i)
+                    x = (torch.rand(args.eval_bs, args.dim).cuda()) * (args.right - args.left) + args.left
+                    sq_de = torch.mean((func.true_solution(x))**2)
+                    sq_nu = torch.mean((func.true_solution(x)-trainable_tree(x, candidate_.action)) ** 2)
+                    numerators.append(sq_nu.item())
+                    denominators.append(sq_de.item())
 
-        relative_l2 = math.sqrt(sum(numerators)) / math.sqrt(sum(denominators))
-        print('relative l2 error: ', relative_l2)
-        logger.append(['relative_l2', 0, 0, 0, relative_l2, 0])
+                relative_l2 = math.sqrt(sum(numerators)) / math.sqrt(sum(denominators))
+                print('relative l2 error: ', relative_l2)
+                logger.append(['relative_l2', 0, 0, 0, relative_l2, 0])
 
 def cosine_lr(opt, base_lr, e, epochs):
     lr = 0.5 * base_lr * (math.cos(math.pi * e / epochs) + 1)

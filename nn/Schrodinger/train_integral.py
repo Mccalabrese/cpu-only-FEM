@@ -36,7 +36,11 @@ parser.add_argument('--function', default='resnet', type=str, help='function to 
 parser.add_argument('--optim', default='adam', type=str, help='function to approximate')
 parser.add_argument('--resume', default='', type=str, metavar='PATH', help='path to latest checkpoint')
 
-parser.add_argument('--weight', type=float, help='weight')
+parser.add_argument('--weight', default=100, type=float, help='weight')
+parser.add_argument('--integral_iters', default=500, type=int, help='number of integral estimate iterations')
+parser.add_argument('--integral_bs', default=100000, type=int, help='integral estimate batch size')
+parser.add_argument('--eval_iters', default=1000, type=int, help='number of evaluation iterations')
+parser.add_argument('--eval_bs', default=100000, type=int, help='evaluation batch size')
 
 # Checkpoints
 parser.add_argument('-c', '--checkpoint', default='checkpoint', type=str, metavar='PATH', help='path to save checkpoint (default: checkpoint)')
@@ -95,14 +99,17 @@ def true_solution(x):
 
 integral_value = []
 
-for i in range(500):
+for i in range(args.integral_iters):
     print(i)
-    x = (torch.rand(100000, args.dim).cuda()) * (args.right - args.left) + args.left
+    x = (torch.rand(args.integral_bs, args.dim).cuda()) * (args.right - args.left) + args.left
     x.requires_grad = True
     value = torch.mean(true_solution(x))
     integral_value.append(value.item())
 
-integral_true = sum(integral_value)/len(integral_value)
+if args.integral_iters > 0:
+    integral_true = sum(integral_value)/len(integral_value)
+else:
+    integral_true = 0.0
 
 # the input dimension is modified to 2
 class ResNet(nn.Module):
@@ -231,21 +238,22 @@ def main():
     # save model
     save_checkpoint({'state_dict': model.state_dict(), 'optimizer': optimizer.state_dict()}, checkpoint=args.checkpoint)
 
-    numerators = []
-    denominators = []
+    if args.eval_iters > 0:
+        numerators = []
+        denominators = []
 
-    for i in range(1000):
-        print(i)
-        x = (torch.rand(100000, args.dim).cuda()) * (args.right - args.left) + args.left
-        # print(true_solution(x).size(), model(x).size())
-        sq_de = torch.mean((true_solution(x)) ** 2)
-        sq_nu = torch.mean((true_solution(x) - model(x)) ** 2)
-        numerators.append(sq_nu.item())
-        denominators.append(sq_de.item())
+        for i in range(args.eval_iters):
+            print(i)
+            x = (torch.rand(args.eval_bs, args.dim).cuda()) * (args.right - args.left) + args.left
+            # print(true_solution(x).size(), model(x).size())
+            sq_de = torch.mean((true_solution(x)) ** 2)
+            sq_nu = torch.mean((true_solution(x) - model(x)) ** 2)
+            numerators.append(sq_nu.item())
+            denominators.append(sq_de.item())
 
-    relative_l2 = math.sqrt(sum(numerators)) / math.sqrt(sum(denominators))
-    print('relative l2 error: ', relative_l2)
-    logger.append(['relative_l2', relative_l2, 0, 0])
+        relative_l2 = math.sqrt(sum(numerators)) / math.sqrt(sum(denominators))
+        print('relative l2 error: ', relative_l2)
+        logger.append(['relative_l2', relative_l2, 0, 0])
 
     # logger.append([0, 0, relative_l2, 0, 0])
 

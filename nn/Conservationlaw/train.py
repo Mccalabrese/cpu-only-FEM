@@ -36,6 +36,8 @@ parser.add_argument('--optim', default='adam', type=str, help='function to appro
 parser.add_argument('--resume', default='', type=str, metavar='PATH', help='path to latest checkpoint')
 parser.add_argument('--bdbs', default=1000, type=int)
 parser.add_argument('--weight', default=100, type=float, help='weight')
+parser.add_argument('--eval_iters', default=1000, type=int, help='number of evaluation iterations')
+parser.add_argument('--eval_bs', default=100000, type=int, help='evaluation batch size')
 
 # Checkpoints
 parser.add_argument('-c', '--checkpoint', default='checkpoint', type=str, metavar='PATH', help='path to save checkpoint (default: checkpoint)')
@@ -204,23 +206,24 @@ def main():
     # save model
     save_checkpoint({'state_dict': model.state_dict(), 'optimizer': optimizer.state_dict()}, checkpoint=args.checkpoint)
 
-    numerators = []
-    denominators = []
+    if args.eval_iters > 0:
+        numerators = []
+        denominators = []
 
-    for i in range(1000):
-        print(i)
-        t = torch.rand(100000, 1).cuda()
-        x1 = (torch.rand(100000, args.dim - 1).cuda()) * (args.right - args.left) + args.left
-        x = torch.cat((t, x1), 1)
-        # print(true_solution(x).size(), model(x).size())
-        sq_de = torch.mean((true_solution(x)) ** 2)
-        sq_nu = torch.mean((true_solution(x) - model(x)) ** 2)
-        numerators.append(sq_nu.item())
-        denominators.append(sq_de.item())
+        for i in range(args.eval_iters):
+            print(i)
+            t = torch.rand(args.eval_bs, 1).cuda()
+            x1 = (torch.rand(args.eval_bs, args.dim - 1).cuda()) * (args.right - args.left) + args.left
+            x = torch.cat((t, x1), 1)
+            # print(true_solution(x).size(), model(x).size())
+            sq_de = torch.mean((true_solution(x)) ** 2)
+            sq_nu = torch.mean((true_solution(x) - model(x)) ** 2)
+            numerators.append(sq_nu.item())
+            denominators.append(sq_de.item())
 
-    relative_l2 = math.sqrt(sum(numerators)) / math.sqrt(sum(denominators))
-    print('relative l2 error: ', relative_l2)
-    logger.append(['relative_l2', relative_l2, 0, 0])
+        relative_l2 = math.sqrt(sum(numerators)) / math.sqrt(sum(denominators))
+        print('relative l2 error: ', relative_l2)
+        logger.append(['relative_l2', relative_l2, 0, 0])
 
     # logger.append([0, 0, relative_l2, 0, 0])
 
